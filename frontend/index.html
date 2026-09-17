@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentFlow · 企业级 AI Agent 工作平台</title>
+<link rel="icon" href="/assets/logo.svg">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="app">
+  <!-- 侧边栏 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <img src="/assets/logo.svg" alt="logo" class="brand-logo">
+      <div class="brand-text">
+        <div class="brand-name">AgentFlow</div>
+        <div class="brand-sub">AI Agent 工作平台</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sidebar-footer" id="sidebar-footer"></div>
+  </aside>
+
+  <!-- 主区域 -->
+  <main class="main" id="main"></main>
+</div>
+
+<!-- 模态框容器 -->
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="/js/api.js"></script>
+<script src="/js/markdown.js"></script>
+<script src="/js/ui.js"></script>
+<script src="/js/views.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

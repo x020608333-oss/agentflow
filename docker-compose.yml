@@ -1,0 +1,20 @@
+services:
+  agentflow:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data        # 数据库/上传文件/图表持久化
+    environment:
+      # 不配置时使用内置 Mock 模型，零 Key 可运行
+      - AGENTFLOW_LLM_PROVIDER=${AGENTFLOW_LLM_PROVIDER:-mock}
+      - AGENTFLOW_LLM_BASE_URL=${AGENTFLOW_LLM_BASE_URL:-}
+      - AGENTFLOW_LLM_API_KEY=${AGENTFLOW_LLM_API_KEY:-}
+      - AGENTFLOW_LLM_MODEL=${AGENTFLOW_LLM_MODEL:-glm-4-flash}
+      - AGENTFLOW_NET_TOOLS_ENABLED=${AGENTFLOW_NET_TOOLS_ENABLED:-true}
+    restart: unless-stopped
+
+  # 可选：多实例部署时把限流/内存迁到 Redis
+  # redis:
+  #   image: redis:7-alpine
+  #   ports: ["6379:6379"]
