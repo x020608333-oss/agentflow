@@ -21,7 +21,8 @@ class Settings(BaseSettings):
 
     app_name: str = "AgentFlow"
     version: str = "0.1.0"
-    host: str = "0.0.0.0"
+    # 默认只监听本机；对外部署前必须开启鉴权并收紧 CORS
+    host: str = "127.0.0.1"
     port: int = 8000
     debug: bool = True
 
@@ -48,7 +49,10 @@ class Settings(BaseSettings):
     auth_enabled: bool = False
     api_key: str = "agentflow-dev-key"
     rate_limit_per_minute: int = 60
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = [
+        "http://localhost:8000", "http://127.0.0.1:8000",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+    ]
 
     # ----- Agent 运行时 -----
     max_iterations: int = 6

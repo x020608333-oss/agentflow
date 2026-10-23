@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import re
+import socket
 import sqlite3
 import sys
 import uuid
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -17,6 +20,27 @@ from app.rag.store import vector_store
 from app.tools.registry import ToolContext, register
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AgentFlow/0.1"
+
+
+def _validate_public_url(url: str) -> str:
+    """只允许访问公网 http(s) 地址，阻止 SSRF 打内网/云元数据/本机服务。"""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("url 必须是完整的 http(s):// 地址")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, port, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise ValueError(f"域名解析失败: {exc}") from exc
+    for info in infos:
+        raw_ip = str(info[4][0]).split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(raw_ip)
+        except ValueError as exc:
+            raise ValueError(f"无法解析目标地址: {raw_ip}") from exc
+        if not ip.is_global:
+            raise ValueError("URL 指向内网/本机/保留地址，已拒绝访问")
+    return url
 
 
 def _mock_search_results(query: str) -> list[dict]:
@@ -96,11 +120,29 @@ async def web_read(args: dict, ctx: ToolContext) -> str:
     url = str(args.get("url", "")).strip()
     if not url.startswith(("http://", "https://")):
         return "错误: url 必须以 http(s):// 开头"
+    try:
+        _validate_public_url(url)
+    except ValueError as exc:
+        return f"错误: {exc}"
     if not ctx.settings.net_tools_enabled:
         return f"[模拟网页内容] 这是 {url} 的正文摘要（离线模式返回模拟文本）：页面介绍了与该主题相关的背景、数据与结论。"
-    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": UA}, follow_redirects=True) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
+    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": UA}, follow_redirects=False) as client:
+        for _ in range(4):
+            resp = await client.get(url)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location", "")
+                if not location:
+                    break
+                url = urljoin(url, location)
+                try:
+                    _validate_public_url(url)
+                except ValueError as exc:
+                    return f"错误: 重定向目标被拒绝（{exc}）"
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            return "错误: 重定向次数过多"
     soup = BeautifulSoup(resp.text, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
@@ -127,11 +169,20 @@ async def http_request(args: dict, ctx: ToolContext) -> str:
     url = str(args.get("url", "")).strip()
     if not url.startswith(("http://", "https://")):
         return "错误: url 必须以 http(s):// 开头"
+    try:
+        _validate_public_url(url)
+    except ValueError as exc:
+        return f"错误: {exc}"
     method = str(args.get("method", "GET")).upper()
+    if method not in ("GET", "POST", "PUT", "DELETE"):
+        return "错误: method 仅支持 GET/POST/PUT/DELETE"
     headers = {str(k): str(v) for k, v in (args.get("headers") or {}).items()}
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+    # 不自动跟随重定向，避免公网 URL 302 到内网造成 SSRF 绕过
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
         resp = await client.request(method, url, headers=headers, json=args.get("body"))
-    return f"HTTP {resp.status_code}\n{resp.text[:3000]}"
+    location = resp.headers.get("location")
+    suffix = f"\nLocation: {location}" if location else ""
+    return f"HTTP {resp.status_code}{suffix}\n{resp.text[:3000]}"
 
 
 @register(
@@ -159,10 +210,18 @@ async def python_exec(args: dict, ctx: ToolContext) -> str:
     # 包装用户代码：预置 DB_PATH 指向平台数据库；配置中文字体；捕获 fig 变量自动保存图表。
     # 完成标记只回传纯 ASCII 文件名，避免中文路径在不同控制台代码页下的编码不一致问题。
     wrapper = (
-        "import matplotlib\n"
-        "matplotlib.use('Agg')\n"
-        "matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC', 'PingFang SC', 'sans-serif']\n"
-        "matplotlib.rcParams['axes.unicode_minus'] = False\n"
+        "try:\n"
+        "    import matplotlib\n"
+        "    matplotlib.use('Agg')\n"
+        "    matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC', 'PingFang SC', 'sans-serif']\n"
+        "    matplotlib.rcParams['axes.unicode_minus'] = False\n"
+        "except ImportError:\n"
+        "    pass\n"
+        "import socket as _socket\n"
+        "def _blocked_network(*a, **k):\n"
+        "    raise RuntimeError('python_exec 已禁用网络访问')\n"
+        "_socket.socket = _blocked_network\n"
+        "_socket.create_connection = _blocked_network\n"
         f"_g = {{'DB_PATH': r'{settings.db_path}'}}\n"
         f"exec(compile({code!r}, 'user_code', 'exec'), _g)\n"
         f"if 'fig' in _g:\n"
@@ -172,6 +231,7 @@ async def python_exec(args: dict, ctx: ToolContext) -> str:
     wrapper_file = settings.sandbox_dir / f"exec_{uuid.uuid4().hex[:10]}.py"
     wrapper_file.write_text(wrapper, encoding="utf-8")
 
+    proc = None
     try:
         import os
 
@@ -196,6 +256,11 @@ async def python_exec(args: dict, ctx: ToolContext) -> str:
             return "错误: 代码执行超时（>30s），已终止"
         output = out.decode("utf-8", errors="replace").strip()
     finally:
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         wrapper_file.unlink(missing_ok=True)
 
     chart_url = None

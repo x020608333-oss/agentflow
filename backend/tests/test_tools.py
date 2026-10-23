@@ -2,8 +2,16 @@
 import asyncio
 
 import app.tools.handlers  # noqa: F401 触发注册
+from app.api.routes.datasets import _safe_upload_path
 from app.config import get_settings
-from app.tools.registry import ToolContext, execute_tool, list_tools, tool_schemas
+from app.tools.registry import (
+    REGISTRY,
+    ToolContext,
+    ToolSpec,
+    execute_tool,
+    list_tools,
+    tool_schemas,
+)
 
 
 def _run(coro):
@@ -67,3 +75,36 @@ def test_unknown_tool():
     ctx = ToolContext(settings=get_settings())
     ok, out, _ = _run(execute_tool("不存在的工具", {}, ctx))
     assert not ok
+
+
+def test_web_tools_block_private_and_metadata_urls():
+    ctx = ToolContext(settings=get_settings())
+    for url in ("http://127.0.0.1:8000/api/health", "http://localhost:8000/", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.1/"):
+        for tool in ("web_read", "http_request"):
+            ok, out, _ = _run(execute_tool(tool, {"url": url}, ctx))
+            assert "内网" in out or "本机" in out or "保留" in out, (tool, url, out)
+
+
+def test_upload_filename_traversal_is_sanitized():
+    path, name = _safe_upload_path("ds12345678", "../../evil.txt")
+    assert name == "evil.txt"
+    assert path.parent == get_settings().uploads_dir.resolve()
+    assert ".." not in path.name
+
+
+def test_tool_timeout_is_enforced():
+    async def slow(args, ctx):
+        await asyncio.sleep(1)
+        return "done"
+
+    REGISTRY["_slow_test"] = ToolSpec("_slow_test", "test", {}, slow)
+    ctx = ToolContext(settings=get_settings())
+    original = ctx.settings.tool_timeout
+    try:
+        ctx.settings.tool_timeout = 0.05
+        ok, out, _ = _run(execute_tool("_slow_test", {}, ctx))
+        assert not ok
+        assert "超时" in out
+    finally:
+        ctx.settings.tool_timeout = original
+        REGISTRY.pop("_slow_test", None)

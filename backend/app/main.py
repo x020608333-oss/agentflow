@@ -27,6 +27,13 @@ def create_app() -> FastAPI:
     settings.ensure_dirs()
     get_engine()  # 启动时建表
 
+    if not settings.auth_enabled and settings.host not in ("127.0.0.1", "localhost", "::1"):
+        logging.getLogger("agentflow").warning(
+            "鉴权关闭且监听 %s：python_exec/联网工具不应暴露到公网。"
+            "请设置 AGENTFLOW_AUTH_ENABLED=true 并配置 API Key。",
+            settings.host,
+        )
+
     app = FastAPI(title=settings.app_name, version=settings.version,
                   description="AgentFlow —— 企业级 AI Agent 工作平台")
 

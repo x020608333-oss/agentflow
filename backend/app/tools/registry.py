@@ -5,6 +5,7 @@ Agent Runtime 通过 tool_schemas() 生成 OpenAI function calling 格式，
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -74,14 +75,18 @@ def truncate(text: str, limit: int = 6000) -> str:
 async def execute_tool(
     name: str, args: dict, ctx: ToolContext
 ) -> tuple[bool, str, int]:
-    """执行工具，返回 (是否成功, 结果文本, 耗时ms)。"""
+    """执行工具，返回 (是否成功, 结果文本, 耗时ms)。超过 tool_timeout 会取消。"""
     spec = REGISTRY.get(name)
     if not spec:
         return False, f"未知工具: {name}", 0
     start = time.perf_counter()
+    timeout = getattr(ctx.settings, "tool_timeout", None)
     try:
-        result = await spec.handler(args or {}, ctx)
+        result = await asyncio.wait_for(spec.handler(args or {}, ctx), timeout=timeout)
         ok = True
+    except asyncio.TimeoutError:
+        result = f"工具执行超时（>{timeout}s），已取消"
+        ok = False
     except Exception as exc:  # 工具失败不终结 Agent 运行，错误回传给模型自行调整
         result = f"工具执行出错: {type(exc).__name__}: {exc}"
         ok = False

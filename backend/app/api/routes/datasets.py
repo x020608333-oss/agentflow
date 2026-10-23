@@ -1,6 +1,8 @@
 """知识库/数据集：创建、文档上传（自动分块向量化）、语义检索测试、表格预览。"""
 from __future__ import annotations
 
+import re
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -16,6 +18,37 @@ from app.rag.ingestion import MAX_FILE_SIZE, ingest_document, ingest_table
 from app.rag.store import vector_store
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"], dependencies=[Depends(verify_auth)])
+
+UPLOAD_CHUNK = 1024 * 1024
+
+
+async def _read_limited(file: UploadFile, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(UPLOAD_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(413, "文件超过 20MB 上限")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _safe_upload_path(dataset_id: str, filename: str) -> tuple[Path, str]:
+    """只保留 basename,并把最终路径限制在 uploads_dir 内,防止 ../ 穿越。"""
+    settings = get_settings()
+    name = Path((filename or "upload.bin").replace("\\", "/")).name.strip()
+    name = re.sub(r'[\\/:*?"<>|\r\n]', "_", name)
+    if not name or name in (".", ".."):
+        raise HTTPException(400, "非法文件名")
+    root = settings.uploads_dir.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    path = (root / f"{dataset_id[:8]}_{uuid.uuid4().hex[:6]}_{name}").resolve()
+    if not path.is_relative_to(root):
+        raise HTTPException(400, "非法上传路径")
+    return path, name
 
 
 def serialize(ds: Dataset, db: Session | None = None) -> dict:
@@ -88,22 +121,25 @@ async def upload_document(dataset_id: str, file: UploadFile = File(...), db: Ses
     ds = db.get(Dataset, dataset_id)
     if not ds:
         raise HTTPException(404, "数据集不存在")
-    content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(400, "文件超过 20MB 上限")
+    content = await _read_limited(file, MAX_FILE_SIZE)
+    if not content:
+        raise HTTPException(400, "空文件")
 
-    settings = get_settings()
-    save_path = settings.uploads_dir / f"{dataset_id[:8]}_{file.filename}"
+    save_path, safe_name = _safe_upload_path(dataset_id, file.filename or "upload.bin")
     save_path.write_bytes(content)
 
     try:
         if ds.kind == "table":
-            info = ingest_table(db, settings, ds, save_path, file.filename)
+            info = ingest_table(db, get_settings(), ds, save_path, safe_name)
             return {"ok": True, "type": "table", **info}
-        doc = ingest_document(db, settings, ds, save_path, file.filename)
+        doc = ingest_document(db, get_settings(), ds, save_path, safe_name)
         return {"ok": True, "type": "document", "document_id": doc.id, "chunks": doc.chunk_count}
     except ValueError as exc:
+        save_path.unlink(missing_ok=True)
         raise HTTPException(400, str(exc))
+    except Exception:
+        save_path.unlink(missing_ok=True)
+        raise
 
 
 @router.post("/{dataset_id}/search")

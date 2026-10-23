@@ -102,6 +102,10 @@ async def run_agent_stream(
 
         window = int((agent.memory_config or {}).get("window", settings.memory_window))
         history = load_history(db, conversation_id, window)
+        # 本轮 user 消息刚刚落库，load_history 会把它带上；调用方还会再追加一次，
+        # 这里去掉尾部重复，避免同一句话在 prompt 里出现两遍。
+        if history and history[-1].get("role") == "user" and history[-1].get("content") == user_message:
+            history = history[:-1]
     finally:
         db.close()
 

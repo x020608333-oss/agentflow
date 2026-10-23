@@ -2,7 +2,7 @@
 
 > 一个简化版的 **Dify + Coze + n8n + AI Agent**：可视化创建 Agent、绑定工具与知识库、ReAct 自主推理 / Pipeline 工作流编排、RAG 检索增强、可观测性 Trace，开箱即用。
 
-![Python](https://img.shields.io/badge/Python-3.11+-3776ab) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688) ![Tests](https://img.shields.io/badge/tests-26%20passed-3fb950) ![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/Python-3.11+-3776ab) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688) ![Tests](https://img.shields.io/badge/tests-29%20passed-3fb950) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -16,7 +16,7 @@
 | **7 个内置工具** | `web_search`（DuckDuckGo）/ `web_read` / `http_request` / `python_exec`（沙箱+图表自动保存）/ `sql_query`（只读守卫）/ `crm_lookup` / `vector_search` |
 | **数据分析 Agent** | 上传 Excel/CSV → 自动导入 SQLite → Agent 生成 SQL/Python → 沙箱执行 → matplotlib 图表自动保存 → 在线查看 |
 | **可观测性** | 每次运行完整 Trace：LLM 调用 / 工具执行 / RAG 检索的 span 时间线、Token 用量、耗时，UI 可视化查看 |
-| **网关** | 请求日志（结构化 JSON）、滑动窗口限流、可选 API Key 鉴权、CORS |
+| **网关** | 请求日志（结构化 JSON）、滑动窗口限流、可选 API Key 鉴权、CORS（默认只放行本地前端） |
 | **流式体验** | SSE 事件流：`thought` / `tool_call` / `tool_result` / `token` / `artifact` 实时推送 |
 | **零依赖演示** | 内置 Mock LLM + 本地哈希 Embedding：**无需任何 API Key 即可跑通全部链路** |
 
@@ -145,7 +145,9 @@ docker compose up --build
 
 - **为什么两阶段流式（非流式 LLM 调用 + 回放式 token 推送）？** 工具轮次与最终回答解耦，事件协议简单可靠；升级路径：provider 层加 `stream=true` 透传 SSE delta，前端协议不变。
 - **为什么自研向量存储而不是 Chroma/Milvus？** 演示规模（万级分片）下 SQLite BLOB + numpy 余弦足够，接口与专业向量库一致可平滑替换；重点展示对检索原理的理解而非堆组件。
-- **Python 沙箱的安全边界？** 子进程 `-I` 隔离 + 30s 超时 + 最小环境变量 + 无网络依赖声明；生产应换容器级隔离（gVisor/firecracker）。注意：当前实现通过注入 `DB_PATH` 与最小 env 运行，属演示级隔离，简历上要能说清边界。
+- **Python 沙箱的安全边界？** 子进程 `-I` 隔离 + 工具级/进程级超时 + 最小环境变量 + 运行时屏蔽 `socket`；生产应换容器级隔离（gVisor/firecracker）。注意：这不是强安全边界——注入的 `DB_PATH`、文件系统与导入机制仍可被利用，属演示级隔离，简历上要能说清边界。
+- **SSRF / 上传安全？** `web_read` / `http_request` 只允许公网 http(s) 地址，拒绝解析到内网/本机/云元数据地址的主机；`web_read` 手动跟随重定向并逐跳复检，`http_request` 不自动跟随重定向；上传只保留文件名 basename，并把最终路径限制在 uploads 目录内。
+- **对外部署要注意什么？** 默认只监听 `127.0.0.1` 且关闭鉴权；对外部署请设置 `AGENTFLOW_AUTH_ENABLED=true` 与强 `AGENTFLOW_API_KEY`，收紧 `AGENTFLOW_CORS_ORIGINS`，并在反向代理层加 TLS/限流。
 - **Mock Provider 的价值？** 演示环境零依赖、CI 可测试、面试可复现；脚本化工具调用保证了 ReAct 循环的确定性测试。
 - **限流为什么先用内存版？** 单进程滑动窗口够用；多实例部署换 Redis `INCR+EXPIRE`，中间件接口不变。
 
